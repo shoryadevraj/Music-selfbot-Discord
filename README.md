@@ -1,1 +1,1 @@
-# Music-selfbot-Discord
+# Music-selfbot
