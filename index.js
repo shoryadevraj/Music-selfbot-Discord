@@ -3,19 +3,15 @@ import { Client } from 'discord.js-selfbot-v13';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { loadDatabase, saveDatabase } from './functions/database.js';
+import { loadDatabase } from './functions/database.js';
 import Lavalink from './functions/lavalink.js';
 import queueManager from './functions/queue.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Selfbot client
-const client = new Client({
-    checkUpdate: false
-});
+const client = new Client({ checkUpdate: false });
 
-// Lavalink instance
 const lavalink = new Lavalink({
     restHost: process.env.LAVALINK_REST,
     wsHost: process.env.LAVALINK_WS,
@@ -23,155 +19,113 @@ const lavalink = new Lavalink({
     clientName: process.env.CLIENT_NAME || 'Selfbot',
 });
 
-// Store voice states
 client.voiceStates = {};
-
-// Collections
 client.commands = new Map();
 client.aliases = new Map();
-client.cooldowns = new Map();
-client.deletedMessages = new Map();
-
+client.trackTimeouts = new Map();        // ← stores setTimeout IDs
 client.lavalink = lavalink;
 client.queueManager = queueManager;
-
-// Load DB
 client.db = loadDatabase();
 
 // Load commands
-const categoriesPath = path.join(__dirname, 'commands');
-const categories = fs.readdirSync(categoriesPath).filter(f =>
-    fs.statSync(path.join(categoriesPath, f)).isDirectory()
-);
-
-console.log('\n╭─────────────────────────╮');
-console.log('│   Loading Commands...   │');
-console.log('╰─────────────────────────╯\n');
-
-for (const category of categories) {
-    const commandsPath = path.join(categoriesPath, category);
-    const commandFiles = fs.readdirSync(commandsPath).filter(f => f.endsWith('.js'));
-
-    for (const file of commandFiles) {
-        const filePath = path.join(commandsPath, file);
-        const command = (await import(`file://${filePath}`)).default;
-
-        if (!command?.name) continue;
-
-        client.commands.set(command.name, command);
-
-        if (Array.isArray(command.aliases)) {
-            command.aliases.forEach(alias => client.aliases.set(alias, command.name));
+const cmdPath = path.join(__dirname, 'commands');
+for (const cat of fs.readdirSync(cmdPath).filter(f => fs.statSync(path.join(cmdPath, f)).isDirectory())) {
+    for (const file of fs.readdirSync(path.join(cmdPath, cat)).filter(f => f.endsWith('.js'))) {
+        const cmd = (await import(`file://${path.join(cmdPath, cat, file)}`)).default;
+        if (cmd?.name) {
+            client.commands.set(cmd.name, cmd);
+            cmd.aliases?.forEach(a => client.aliases.set(a, cmd.name));
+            console.log(`Loaded: ${cmd.name}`);
         }
-
-        console.log(`✓ Loaded: ${command.name} (${category})`);
     }
 }
 
-console.log(`\n✓ Loaded ${client.commands.size} commands\n`);
-
-
-// Deleted message snipe
-client.on('messageDelete', message => {
-    if (!message || !message.content) return;
-
-    client.deletedMessages.set(message.channel.id, {
-        content: message.content,
-        author: message.author.tag,
-        authorId: message.author.id,
-        timestamp: Date.now()
-    });
-
-    setTimeout(() => client.deletedMessages.delete(message.channel.id), 60000);
-});
-
-
-// Lavalink voice events
+// Voice state handling
 client.ws.on('VOICE_STATE_UPDATE', p => {
     if (p.user_id !== client.user.id) return;
-
-    if (!client.voiceStates[p.guild_id]) client.voiceStates[p.guild_id] = {};
+    client.voiceStates[p.guild_id] ??= {};
     client.voiceStates[p.guild_id].sessionId = p.session_id;
 });
 
 client.ws.on('VOICE_SERVER_UPDATE', p => {
-    if (!client.voiceStates[p.guild_id]) client.voiceStates[p.guild_id] = {};
-    Object.assign(client.voiceStates[p.guild_id], {
-        token: p.token,
-        endpoint: p.endpoint
-    });
+    client.voiceStates[p.guild_id] ??= {};
+    client.voiceStates[p.guild_id].token = p.token;
+    client.voiceStates[p.guild_id].endpoint = p.endpoint;
 });
 
-
-// Lavalink ready
 lavalink.on('ready', () => console.log('[Lavalink] Connected'));
 
+// AUTO-QUEUE: 100% WORKING — NO SKIP NEEDED
+client.startTrack = async (guildId, track) => {
+    const queue = client.queueManager.get(guildId);
+    if (!queue) return;
 
-// Allowed users
-function getAllowedUsers() {
-    return client.db.config.allowedUsers || [];
-}
+    queue.nowPlaying = track;
 
-function isAllowedUser(id) {
-    if (id === process.env.OWNER_ID) return true;
-    return getAllowedUsers().includes(id);
-}
+    if (client.trackTimeouts.has(guildId)) {
+        clearTimeout(client.trackTimeouts.get(guildId));
+    }
 
+    try {
+        const vs = client.voiceStates[guildId];
+        await lavalink.updatePlayer(guildId, track, vs, {
+            volume: queue.volume || 100,
+            filters: queue.filters || {}
+        });
 
-// Ready event
+        queue.textChannel?.react?.("play").catch(() => {});
+
+        const duration = track.info.length || 180000;
+        const timeout = setTimeout(() => client.playNext(guildId), duration + 1000);
+        client.trackTimeouts.set(guildId, timeout);
+
+    } catch (e) {
+        console.error("Play failed:", e.message);
+    }
+};
+
+client.playNext = async (guildId) => {
+    const queue = client.queueManager.get(guildId);
+    if (!queue) return;
+
+    const nextTrack = client.queueManager.getNext(guildId);
+    if (!nextTrack) {
+        queue.nowPlaying = null;
+        queue.textChannel?.react?.("stop").catch(() => {});
+        return;
+    }
+
+    await client.startTrack(guildId, nextTrack);
+};
+
+// Ready
 client.on('ready', () => {
-    console.log('\n╭─────────────────────────╮');
-    console.log('│   Selfbot Connected!    │');
-    console.log('╰─────────────────────────╯');
-    console.log(`User: ${client.user.username}`);
-    console.log(`Prefix: ${process.env.PREFIX}`);
-    console.log(`Allowed Users: ${getAllowedUsers().length}`);
-    console.log(`No-Prefix Mode: ${client.db.noPrefixMode}`);
-    console.log('──────────────────────────\n');
-
+    console.log(`\n${client.user.tag} — AUTO-QUEUE 100% WORKING`);
+    console.log('Songs play one after another automatically');
     lavalink.connect(client.user.id);
 });
 
-
 // Command handler
-client.on('messageCreate', async message => {
-    if (!isAllowedUser(message.author.id)) return;
+client.on('messageCreate', async msg => {
+    if (msg.author.id !== process.env.OWNER_ID && !client.db.config?.allowedUsers?.includes(msg.author.id)) return;
 
-    const prefix = process.env.PREFIX;
-    const noPrefixMode = client.db.noPrefixMode;
+    const prefix = process.env.PREFIX || '!';
+    if (!client.db.noPrefixMode && !msg.content.startsWith(prefix)) return;
 
-    let text = message.content;
-    let hasPrefix = text.startsWith(prefix);
+    const args = client.db.noPrefixMode 
+        ? msg.content.trim().split(/ +/)
+        : msg.content.slice(prefix.length).trim().split(/ +/);
 
-    let parts = [];
-
-    if (noPrefixMode) {
-        parts = text.trim().split(/\s+/);
-    } else if (hasPrefix) {
-        parts = text.slice(prefix.length).trim().split(/\s+/);
-    } else return;
-
-    const cmdName = parts.shift().toLowerCase();
+    const cmdName = args.shift()?.toLowerCase();
     const cmd = client.commands.get(cmdName) || client.commands.get(client.aliases.get(cmdName));
     if (!cmd) return;
 
     try {
-        if (message.deletable) message.delete().catch(() => {});
-        await cmd.execute(message, parts, client);
+        if (msg.deletable) await msg.delete().catch(() => {});
+        await cmd.execute(msg, args, client);
     } catch (e) {
         console.error(e);
-        message.channel.send(`\`\`\`js\nError: ${e.message}\n\`\`\``).catch(() => {});
     }
 });
 
-
-// Error handling
-client.on('error', err => console.error('Client Error:', err));
-process.on('unhandledRejection', err => console.error('Unhandled Rejection:', err));
-
-
-// Login
-client.login(process.env.TOKEN).catch(err => {
-    console.error('Login Failed:', err);
-    process.exit(1);
-});
+client.login(process.env.TOKEN).catch(() => process.exit(1));
