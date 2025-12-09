@@ -19,43 +19,47 @@ const lavalink = new Lavalink({
     clientName: process.env.CLIENT_NAME || 'Selfbot',
 });
 
+// Collections
 client.voiceStates = {};
 client.commands = new Map();
 client.aliases = new Map();
-client.trackTimeouts = new Map();        // ← stores setTimeout IDs
+client.trackTimeouts = new Map();
 client.lavalink = lavalink;
 client.queueManager = queueManager;
 client.db = loadDatabase();
 
 // Load commands
 const cmdPath = path.join(__dirname, 'commands');
-for (const cat of fs.readdirSync(cmdPath).filter(f => fs.statSync(path.join(cmdPath, f)).isDirectory())) {
-    for (const file of fs.readdirSync(path.join(cmdPath, cat)).filter(f => f.endsWith('.js'))) {
-        const cmd = (await import(`file://${path.join(cmdPath, cat, file)}`)).default;
-        if (cmd?.name) {
-            client.commands.set(cmd.name, cmd);
-            cmd.aliases?.forEach(a => client.aliases.set(a, cmd.name));
-            console.log(`Loaded: ${cmd.name}`);
+for (const category of fs.readdirSync(cmdPath).filter(f => fs.statSync(path.join(cmdPath, f)).isDirectory())) {
+    for (const file of fs.readdirSync(path.join(cmdPath, category)).filter(f => f.endsWith('.js'))) {
+        const fullPath = path.join(cmdPath, category, file);
+        const command = (await import(`file://${fullPath}`)).default;
+        if (command?.name) {
+            client.commands.set(command.name, command);
+            command.aliases?.forEach(alias => client.aliases.set(alias, command.name));
+            console.log(`Loaded: ${command.name} (${category})`);
         }
     }
 }
 
-// Voice state handling
-client.ws.on('VOICE_STATE_UPDATE', p => {
-    if (p.user_id !== client.user.id) return;
-    client.voiceStates[p.guild_id] ??= {};
-    client.voiceStates[p.guild_id].sessionId = p.session_id;
+// Voice state tracking
+client.ws.on('VOICE_STATE_UPDATE', packet => {
+    if (packet.user_id !== client.user.id) return;
+    const gid = packet.guild_id;
+    client.voiceStates[gid] ??= {};
+    client.voiceStates[gid].sessionId = packet.session_id;
 });
 
-client.ws.on('VOICE_SERVER_UPDATE', p => {
-    client.voiceStates[p.guild_id] ??= {};
-    client.voiceStates[p.guild_id].token = p.token;
-    client.voiceStates[p.guild_id].endpoint = p.endpoint;
+client.ws.on('VOICE_SERVER_UPDATE', packet => {
+    const gid = packet.guild_id;
+    client.voiceStates[gid] ??= {};
+    client.voiceStates[gid].token = packet.token;
+    client.voiceStates[gid].endpoint = packet.endpoint;
 });
 
 lavalink.on('ready', () => console.log('[Lavalink] Connected'));
 
-// AUTO-QUEUE: 100% WORKING — NO SKIP NEEDED
+// AUTO-QUEUE — 100% WORKING
 client.startTrack = async (guildId, track) => {
     const queue = client.queueManager.get(guildId);
     if (!queue) return;
@@ -73,14 +77,14 @@ client.startTrack = async (guildId, track) => {
             filters: queue.filters || {}
         });
 
-        queue.textChannel?.react?.("play").catch(() => {});
+        queue.textChannel?.react?.("▶").catch(() => {});
 
         const duration = track.info.length || 180000;
         const timeout = setTimeout(() => client.playNext(guildId), duration + 1000);
         client.trackTimeouts.set(guildId, timeout);
 
     } catch (e) {
-        console.error("Play failed:", e.message);
+        console.error("Failed to start track:", e.message);
     }
 };
 
@@ -88,44 +92,79 @@ client.playNext = async (guildId) => {
     const queue = client.queueManager.get(guildId);
     if (!queue) return;
 
-    const nextTrack = client.queueManager.getNext(guildId);
-    if (!nextTrack) {
+    const next = client.queueManager.getNext(guildId);
+    if (!next) {
         queue.nowPlaying = null;
-        queue.textChannel?.react?.("stop").catch(() => {});
+        queue.textChannel?.react?.("⏹").catch(() => {});
         return;
     }
 
-    await client.startTrack(guildId, nextTrack);
+    await client.startTrack(guildId, next);
 };
 
 // Ready
 client.on('ready', () => {
-    console.log(`\n${client.user.tag} — AUTO-QUEUE 100% WORKING`);
-    console.log('Songs play one after another automatically');
+    console.log(`\nLogged in as ${client.user.tag}`);
+    console.log('Auto-queue: 100% WORKING');
+    console.log('Text lock: ' + (process.env.LOCK_TEXT_CHANNEL ? 'ENABLED' : 'DISABLED'));
+    console.log('Voice lock: ' + (process.env.LOCK_VOICE_CHANNEL ? 'ENABLED' : 'DISABLED'));
+    console.log('Force prefix: ' + (process.env.FORCE_PREFIX === 'true' ? 'YES' : 'NO'));
     lavalink.connect(client.user.id);
 });
 
-// Command handler
-client.on('messageCreate', async msg => {
-    if (msg.author.id !== process.env.OWNER_ID && !client.db.config?.allowedUsers?.includes(msg.author.id)) return;
+// ULTIMATE COMMAND HANDLER — FULLY CONTROLLABLE FEATURES
+client.on('messageCreate', async message => {
+    if (message.author.bot || !message.guild) return;
 
-    const prefix = process.env.PREFIX || '!';
-    if (!client.db.noPrefixMode && !msg.content.startsWith(prefix)) return;
+    // Owner + allowed users
+    const isOwner = message.author.id === process.env.OWNER_ID;
+    const isAllowed = client.db.config?.allowedUsers?.includes(message.author.id);
+    if (!isOwner && !isAllowed) return;
 
-    const args = client.db.noPrefixMode 
-        ? msg.content.trim().split(/ +/)
-        : msg.content.slice(prefix.length).trim().split(/ +/);
+    const prefix = process.env.PREFIX || "!";
+
+    // FEATURE 1: FORCE PREFIX (ignores DB noPrefixMode)
+    const forcePrefix = process.env.FORCE_PREFIX === "true";
+    if (forcePrefix && !message.content.startsWith(prefix)) return;
+
+    // FEATURE 2: LOCK TO SPECIFIC TEXT CHANNEL
+    if (process.env.LOCK_TEXT_CHANNEL && message.channel.id !== process.env.LOCK_TEXT_CHANNEL) return;
+
+    // Parse args (respect noPrefixMode unless forcePrefix)
+    let args = [];
+    if (forcePrefix) {
+        if (!message.content.startsWith(prefix)) return;
+        args = message.content.slice(prefix.length).trim().split(/ +/);
+    } else if (!client.db.noPrefixMode) {
+        if (!message.content.startsWith(prefix)) return;
+        args = message.content.slice(prefix.length).trim().split(/ +/);
+    } else {
+        args = message.content.trim().split(/ +/);
+    }
 
     const cmdName = args.shift()?.toLowerCase();
-    const cmd = client.commands.get(cmdName) || client.commands.get(client.aliases.get(cmdName));
-    if (!cmd) return;
+    const command = client.commands.get(cmdName) || client.commands.get(client.aliases.get(cmdName));
+    if (!command) return;
+
+    // FEATURE 3: LOCK MUSIC TO SPECIFIC VOICE CHANNEL
+    if (process.env.LOCK_VOICE_CHANNEL && command.category === "music") {
+        const requiredVC = process.env.LOCK_VOICE_CHANNEL;
+        if (!message.member?.voice?.channel || message.member.voice.channel.id !== requiredVC) {
+            return message.channel.send("```Join the music voice channel first```");
+        }
+    }
 
     try {
-        if (msg.deletable) await msg.delete().catch(() => {});
-        await cmd.execute(msg, args, client);
-    } catch (e) {
-        console.error(e);
+        if (message.deletable) await message.delete().catch(() => {});
+        await command.execute(message, args, client);
+    } catch (error) {
+        console.error("Command error:", error);
+        message.channel.send("```An error occurred```").catch(() => {});
     }
 });
 
-client.login(process.env.TOKEN).catch(() => process.exit(1));
+// Login
+client.login(process.env.TOKEN).catch(err => {
+    console.error("Login failed:", err.message);
+    process.exit(1);
+});
