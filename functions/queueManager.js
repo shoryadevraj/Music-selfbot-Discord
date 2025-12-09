@@ -4,6 +4,7 @@ class Queue {
   }
 
   get(guildId) {
+    if (!this.queues.has(guildId)) this.create(guildId);
     return this.queues.get(guildId);
   }
 
@@ -14,6 +15,7 @@ class Queue {
       volume: 100,
       filters: {},
       textChannel: null,
+      loop: 'off', // off, track, queue
     };
     this.queues.set(guildId, queue);
     return queue;
@@ -25,24 +27,33 @@ class Queue {
 
   addSong(guildId, song) {
     const queue = this.get(guildId);
-    if (queue) {
-      queue.songs.push(song);
-    }
+    queue.songs.push(song);
   }
 
   getNext(guildId) {
     const queue = this.get(guildId);
-    if (queue && queue.songs.length > 0) {
-      return queue.songs.shift();
+    if (!queue) return null;
+
+    if (queue.loop === 'track' && queue.nowPlaying) {
+      return queue.nowPlaying; // repeat same song
     }
-    return null;
+
+    if (queue.loop === 'queue' && queue.songs.length === 0 && queue.nowPlaying) {
+      queue.songs.push(queue.nowPlaying); // re-add current to end of queue
+    }
+
+    return queue.songs.shift() || null;
   }
 
   clear(guildId) {
     const queue = this.get(guildId);
-    if (queue) {
-      queue.songs = [];
-    }
+    if (queue) queue.songs = [];
+  }
+
+  // THIS IS THE MISSING PIECE
+  setNowPlaying(guildId, track) {
+    const queue = this.get(track.guildId || track.guild?.id);
+    if (queue) queue.nowPlaying = track;
   }
 }
 
