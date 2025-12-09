@@ -1,4 +1,4 @@
-# Rock Music Selfbot
+# S Music Selfbot
 
 A JavaScript-based Discord self-bot designed for streaming high-quality music from YouTube, Spotify, and multiple other platforms.  
 Optimized for speed, stability, and smooth performance.
@@ -71,12 +71,6 @@ This will show all available commands inside Discord.
 | commands/ | Command modules |
 | filters/ | Music filter definitions |
 
-## Author
-
-| Platform | Link |
-|----------|------|
-| Discord | https://discord.com/users/devrock07 |
-| Support Server | https://discord.gg/aMKpJUYppw |
 
 ## Contributing
 
@@ -89,6 +83,4 @@ Feel free to open a pull request or participate in discussions on the Discord se
 - Use this project responsibly.  
 - The author is not accountable for misuse, violations, or account bans caused by self-botting.
 
-## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=asnehitadas-71/Music-selfbot-Discord&type=date&legend=top-left)](https://www.star-history.com/#asnehitadas-71/Music-selfbot-Discord&type=date&legend=top-left)
