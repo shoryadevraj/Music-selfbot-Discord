@@ -6,13 +6,13 @@ export default {
   usage: 'clearfilter',
   async execute(message, args, client) {
     if (!message.guild) {
-      await message.channel.send('``````');
+      await message.channel.send('This command can only be used in a server.');
       return;
     }
 
     const queue = client.queueManager.get(message.guild.id);
     if (!queue || !queue.nowPlaying) {
-      await message.channel.send('``````');
+      await message.channel.send('Nothing is playing right now.');
       return;
     }
 
@@ -24,16 +24,11 @@ export default {
         filters: {}
       });
 
-      let response = '```js\n';
-      response += '  🎛️ All filters removed\n';
-      response += '  ✅ Audio reset to normal\n';
-      response += '\n╰──────────────────────────────────╯\n```';
-
-      await message.channel.send(response);
+      await message.channel.send('All filters have been removed. Audio is now normal.');
 
     } catch (err) {
       console.error('[ClearFilter Error]:', err);
-      await message.channel.send('``````');
+      await message.channel.send('Failed to clear filters.');
     }
   }
 };
