@@ -4,8 +4,5 @@
     "maxCommands": 5,
     "timeWindow": 10000
   },
-  "allowedUsers": [
-    "399625333617197057",
-    "1175389241350561924"
-  ]
+  "allowedUsers": [ ]
 }
